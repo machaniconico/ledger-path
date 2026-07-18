@@ -40,3 +40,6 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# oh-my-claudecode operational state (never commit; not part of the app)
+/.omc/
