@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"TPL=$(grep -n \\\"TPL_DIR=\\\" ~/.claude/scripts/setup-auto-merge.sh | head -1); echo \\\"$TPL\\\"; TPLDIR=$(dirname $(grep -oP 'TPL_DIR=\\\"\\\\K[^\\\"]+' ~/.claude/scripts/setup-auto-merge.sh 2>/dev/n...",
+  "error": "Exit code 1\n18:TPL_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)/auto-merge-templates\"\n---resolved attempts---\nls: /Users/macha/.claude/scripts/templates/: No such file or directory\n===ci.yml template===\ncat: /Users/macha/.claude/scripts/templates/ci.yml: No such file or directory",
+  "timestamp": "2026-07-17T23:16:06.737Z",
+  "retry_count": 1
+}
