@@ -143,6 +143,11 @@ main { overflow: hidden; }
   letter-spacing: -0.025em;
 }
 .hero-lead { max-width: 590px; margin: 28px 0 34px; color: #405663; font-size: 18px; }
+.hero-metrics { margin: 0 0 30px; display: flex; gap: 12px; }
+.hero-metrics > div { min-width: 150px; padding: 13px 16px; border-left: 3px solid var(--navy); background: rgba(255, 253, 247, 0.7); }
+.hero-metrics dt { color: var(--muted); font-size: 12px; font-weight: 800; }
+.hero-metrics dd { margin: 1px 0 0; color: var(--navy); font: 600 27px/1.2 Georgia, "Yu Mincho", serif; }
+.hero-metrics dd span { font: 700 12px/1.4 "Noto Sans JP", "Yu Gothic", sans-serif; }
 
 .primary-button, .secondary-button, .ivory-button {
   min-height: 52px;
@@ -201,6 +206,7 @@ main { overflow: hidden; }
 .progress-track { height: 7px; overflow: hidden; background: #e1d9c9; }
 .progress-track span { display: block; height: 100%; background: var(--vermilion); transition: width 250ms ease; }
 .today-card > small { display: block; margin-top: 8px; color: var(--muted); }
+.today-card .goal-progress + small { margin-bottom: 22px; }
 
 .practice-section { padding: 78px 0 88px; }
 .section-heading { margin-bottom: 30px; display: flex; justify-content: space-between; align-items: end; gap: 24px; }
@@ -295,12 +301,35 @@ main { overflow: hidden; }
 .question-picker-card > small { margin-top: auto; display: flex; justify-content: space-between; color: var(--muted); font-weight: 700; }
 .question-picker-meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
 .review-section { padding-top: 66px; }
+.review-summary { margin: -14px 0 22px; color: var(--muted); font-size: 13px; }
 .review-list { display: grid; gap: 10px; }
 .review-list button { padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; gap: 16px; border: 1px solid var(--line); background: var(--paper); color: var(--navy); text-align: left; }
 .review-list button:hover { border-color: var(--navy); }
 .review-list small { display: block; color: var(--vermilion); font-weight: 800; }
 .review-list strong { display: block; font-size: 18px; }
 .empty-state { margin: 0; padding: 30px; border: 1px dashed #a89f90; background: rgba(255, 253, 247, 0.55); color: var(--muted); text-align: center; }
+
+.stats-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(250px, 0.8fr); gap: 26px; align-items: start; }
+.accuracy-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.accuracy-card { min-width: 0; padding: 18px; border: 1px solid var(--line); border-left: 5px solid var(--navy); background: var(--paper); }
+.accuracy-card.accuracy-weak { border-left-color: #8a5a12; }
+.accuracy-card.accuracy-unstarted { border-left-color: #657781; border-left-style: dashed; }
+.accuracy-card-head { display: flex; justify-content: space-between; align-items: start; gap: 10px; }
+.accuracy-card h3 { margin: 0; color: var(--navy); font: 600 17px/1.45 Georgia, "Yu Mincho", serif; }
+.accuracy-status { flex: none; padding: 2px 7px; border: 1px solid currentColor; color: var(--navy); font-size: 10px; font-weight: 800; }
+.accuracy-weak .accuracy-status { color: #70480c; }
+.accuracy-unstarted .accuracy-status { color: #53656e; }
+.accuracy-value { margin: 13px 0 5px; color: var(--navy); font: 600 27px/1.2 Georgia, serif; }
+.accuracy-track { height: 7px; overflow: hidden; border: 1px solid #c9c1b2; background: #e7e0d4; }
+.accuracy-track > span { display: block; height: 100%; background: var(--navy); transition: width 250ms ease; }
+.accuracy-weak .accuracy-track > span { background: #8a5a12; }
+.accuracy-detail { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.weakness-card { padding: 25px; border-top: 5px solid #d09b35; background: var(--navy); color: white; }
+.weakness-card h3 { margin: 0; font: 600 24px/1.4 Georgia, "Yu Mincho", serif; }
+.weakness-card > p:not(.eyebrow) { color: #dbe5eb; font-size: 13px; }
+.weakness-card ul { margin: 20px 0 0; padding: 0; display: grid; gap: 1px; list-style: none; }
+.weakness-card li { padding: 10px 0; display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid rgba(255, 255, 255, 0.22); font-size: 12px; }
+.weakness-card li strong { color: #f4cc79; white-space: nowrap; }
 
 .mock-section {
   margin-top: 24px;
@@ -355,6 +384,7 @@ footer > small { color: var(--muted); white-space: nowrap; }
   .practice-layout { grid-template-columns: 1fr; }
   .question-card { border-right: 0; border-bottom: 1px solid var(--line); }
   .category-grid, .question-picker { grid-template-columns: repeat(2, 1fr); }
+  .stats-layout { grid-template-columns: 1fr; }
   .mock-section { grid-template-columns: 1fr auto; }
   .mock-section > div:first-child { grid-column: 1 / -1; }
   footer { grid-template-columns: 1fr 2fr; }
@@ -371,6 +401,8 @@ footer > small { color: var(--muted); white-space: nowrap; }
   .hero { min-height: 0; padding: 56px 0 64px; gap: 48px; }
   .hero h1 { font-size: clamp(39px, 12vw, 54px); }
   .hero-lead { font-size: 16px; }
+  .hero-metrics { display: grid; grid-template-columns: 1fr 1fr; }
+  .hero-metrics > div { min-width: 0; }
   .today-card { padding: 26px 22px; }
   .practice-section, .content-section { padding: 58px 0; }
   .section-heading { align-items: start; flex-direction: column; }
@@ -384,7 +416,7 @@ footer > small { color: var(--muted); white-space: nowrap; }
   .line-button { flex: 1; padding-inline: 10px; }
   .line-count { min-width: 72px; }
   .form-actions > button { width: 100%; }
-  .category-grid, .question-picker { grid-template-columns: 1fr; }
+  .category-grid, .question-picker, .accuracy-grid { grid-template-columns: 1fr; }
   .category-card { min-height: 138px; }
   .question-picker-card { min-height: 126px; }
   .question-bank-heading { align-items: start; }

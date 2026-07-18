@@ -23,18 +23,28 @@ import {
   type Difficulty,
   type Question,
 } from "../lib/questions";
+import {
+  dailyGoalProgress,
+  reviewOrder,
+  streak,
+  type Attempt,
+} from "../lib/progress";
+import { categoryAccuracy } from "../lib/stats";
 
 type SavedState = {
+  version: 2;
   nickname: string;
   dailyMinutes: number;
   completed: string[];
   review: string[];
+  attempts: Attempt[];
 };
 
 type SaveStatus = "pending" | "saved" | "error";
 type CategoryFilter = CategoryKey | "all";
 
-const STORAGE_KEY = "ledger-path-state-v1";
+const STORAGE_KEY = "ledger-path-state-v2";
+const LEGACY_STORAGE_KEY = "ledger-path-state-v1";
 const INITIAL_ENTRY_LINES = 4;
 const MIN_ENTRY_LINES = 2;
 const MAX_ENTRY_LINES = 8;
@@ -63,26 +73,52 @@ const difficultyLabels: Record<Difficulty, string> = {
   advanced: "応用",
 };
 
-function parseSavedState(raw: string): SavedState | null {
-  const value: unknown = JSON.parse(raw);
-  if (!value || typeof value !== "object") return null;
+function parseSavedState(raw: string, includeAttempts: boolean): SavedState | null {
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!value || typeof value !== "object") return null;
 
-  const candidate = value as Record<string, unknown>;
-  const cleanIds = (input: unknown) =>
-    Array.isArray(input)
-      ? [...new Set(input.filter((id): id is string => typeof id === "string" && validQuestionIds.has(id)))]
-      : [];
-  const minutes =
-    typeof candidate.dailyMinutes === "number" && allowedDailyMinutes.has(candidate.dailyMinutes)
-      ? candidate.dailyMinutes
-      : 15;
+    const candidate = value as Record<string, unknown>;
+    if (includeAttempts && candidate.version !== 2) return null;
 
-  return {
-    nickname: typeof candidate.nickname === "string" ? candidate.nickname.slice(0, 20) : "",
-    dailyMinutes: minutes,
-    completed: cleanIds(candidate.completed),
-    review: cleanIds(candidate.review),
-  };
+    const cleanIds = (input: unknown) =>
+      Array.isArray(input)
+        ? [...new Set(input.filter((id): id is string => typeof id === "string" && validQuestionIds.has(id)))]
+        : [];
+    const cleanAttempts = (input: unknown): Attempt[] =>
+      Array.isArray(input)
+        ? input.flatMap((value) => {
+            if (!value || typeof value !== "object") return [];
+            const attempt = value as Record<string, unknown>;
+            return typeof attempt.questionId === "string" &&
+              validQuestionIds.has(attempt.questionId) &&
+              typeof attempt.correct === "boolean" &&
+              typeof attempt.at === "number" &&
+              Number.isFinite(attempt.at)
+              ? [{
+                  questionId: attempt.questionId,
+                  correct: attempt.correct,
+                  at: attempt.at,
+                }]
+              : [];
+          })
+        : [];
+    const minutes =
+      typeof candidate.dailyMinutes === "number" && allowedDailyMinutes.has(candidate.dailyMinutes)
+        ? candidate.dailyMinutes
+        : 15;
+
+    return {
+      version: 2,
+      nickname: typeof candidate.nickname === "string" ? candidate.nickname.slice(0, 20) : "",
+      dailyMinutes: minutes,
+      completed: cleanIds(candidate.completed),
+      review: cleanIds(candidate.review),
+      attempts: includeAttempts ? cleanAttempts(candidate.attempts) : [],
+    };
+  } catch {
+    return null;
+  }
 }
 
 const reasonMessages: Record<ReasonCode, string> = {
@@ -119,6 +155,8 @@ export default function LedgerPathApp() {
   const [dailyMinutes, setDailyMinutes] = useState(15);
   const [completed, setCompleted] = useState<string[]>([]);
   const [review, setReview] = useState<string[]>([]);
+  const [attempts, setAttempts] = useState<Attempt[]>([]);
+  const [calculationNow, setCalculationNow] = useState(0);
   const [questionIndex, setQuestionIndex] = useState(0);
   const [lines, setLines] = useState<EntryLine[]>(blankLines);
   const [result, setResult] = useState<ScoreResult | null>(null);
@@ -155,6 +193,44 @@ export default function LedgerPathApp() {
     [completedSet],
   );
   const progress = Math.round((completed.length / questions.length) * 100);
+  const srsReviewItems = useMemo(
+    () => reviewOrder(attempts, calculationNow),
+    [attempts, calculationNow],
+  );
+  const reviewQueue = useMemo(() => {
+    const orderedIds = srsReviewItems
+      .filter((item) => item.due && validQuestionIds.has(item.questionId))
+      .map((item) => item.questionId);
+    const mergedIds = new Set(orderedIds);
+    review.forEach((id) => mergedIds.add(id));
+    return [...mergedIds];
+  }, [review, srsReviewItems]);
+  const reviewQueueSet = useMemo(() => new Set(reviewQueue), [reviewQueue]);
+  const scheduledReviewCount = srsReviewItems.filter((item) => !item.due).length;
+  const dailyQuestionTarget = Math.max(1, Math.ceil(dailyMinutes / 5));
+  const todayGoal = useMemo(
+    () => dailyGoalProgress(
+      attempts,
+      { unit: "questions", amount: dailyQuestionTarget },
+      calculationNow,
+    ),
+    [attempts, calculationNow, dailyQuestionTarget],
+  );
+  const currentStreak = useMemo(
+    () => streak(attempts, calculationNow),
+    [attempts, calculationNow],
+  );
+  const accuracyRows = useMemo(() => categoryAccuracy(attempts), [attempts]);
+  const accuracyByCategory = useMemo(
+    () => new Map(accuracyRows.map((row) => [row.category, row])),
+    [accuracyRows],
+  );
+  const weakCategories = useMemo(
+    () => accuracyRows
+      .filter((row) => row.accuracy === null || row.accuracy < 0.7)
+      .sort((left, right) => (left.accuracy ?? -1) - (right.accuracy ?? -1)),
+    [accuracyRows],
+  );
   const greetingName = nickname.trim() || "学習者";
   const mockQuestionIndex = mockQuestions.findIndex((item) => item.id === question.id);
   const filteredQuestionIndex = filteredQuestions.findIndex((item) => item.id === question.id);
@@ -162,20 +238,24 @@ export default function LedgerPathApp() {
   useEffect(() => {
     const restoreTask = window.setTimeout(() => {
       try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (raw) {
-          const saved = parseSavedState(raw);
-          if (!saved) throw new Error("invalid saved state");
+        const currentRaw = localStorage.getItem(STORAGE_KEY);
+        const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
+        const saved =
+          (currentRaw ? parseSavedState(currentRaw, true) : null) ??
+          (legacyRaw ? parseSavedState(legacyRaw, false) : null);
+        if (saved) {
           setNickname(saved.nickname);
           setDailyMinutes(saved.dailyMinutes);
           setCompleted(saved.completed);
           setReview(saved.review);
+          setAttempts(saved.attempts);
         } else {
           setOnboarding(true);
         }
       } catch {
         setOnboarding(true);
       }
+      setCalculationNow(Date.now());
       setHydrated(true);
     }, 0);
 
@@ -185,10 +265,12 @@ export default function LedgerPathApp() {
   useEffect(() => {
     if (!hydrated || onboarding) return;
     const saved: SavedState = {
+      version: 2,
       nickname,
       dailyMinutes,
       completed,
       review,
+      attempts,
     };
     const saveTask = window.setTimeout(() => {
       setSaveStatus("pending");
@@ -200,7 +282,7 @@ export default function LedgerPathApp() {
       }
     }, 0);
     return () => window.clearTimeout(saveTask);
-  }, [hydrated, onboarding, nickname, dailyMinutes, completed, review]);
+  }, [hydrated, onboarding, nickname, dailyMinutes, completed, review, attempts]);
 
   useEffect(() => {
     if (!hydrated || !onboarding) return;
@@ -211,15 +293,43 @@ export default function LedgerPathApp() {
     };
   }, [hydrated, onboarding]);
 
+  useEffect(() => {
+    if (!hydrated) return;
+
+    let midnightTimer = 0;
+    const refreshNow = () => setCalculationNow(Date.now());
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") refreshNow();
+    };
+    const scheduleMidnightRefresh = () => {
+      const now = new Date();
+      const nextMidnight = new Date(now);
+      nextMidnight.setHours(24, 0, 0, 0);
+      midnightTimer = window.setTimeout(() => {
+        refreshNow();
+        scheduleMidnightRefresh();
+      }, nextMidnight.getTime() - now.getTime() + 50);
+    };
+
+    scheduleMidnightRefresh();
+    window.addEventListener("focus", refreshNow);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearTimeout(midnightTimer);
+      window.removeEventListener("focus", refreshNow);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [hydrated]);
+
   const recommended = useMemo(() => {
-    const reviewQuestion = review
+    const reviewQuestion = reviewQueue
       .map((id) => questionById.get(id))
       .find((item): item is Question => Boolean(item));
     const incompleteQuestion = crossCategoryQuestions.find(
       (item) => !completedSet.has(item.id),
     );
     return reviewQuestion ?? incompleteQuestion ?? crossCategoryQuestions[0] ?? questions[0];
-  }, [completedSet, review]);
+  }, [completedSet, reviewQueue]);
 
   function selectQuestion(id: string) {
     const selectedQuestion = questionById.get(id);
@@ -260,6 +370,7 @@ export default function LedgerPathApp() {
 
   function submitAnswer(event: FormEvent) {
     event.preventDefault();
+    if (!mockMode && result) return;
     const scored = scoreJournalEntry(lines, question.expected);
 
     if (mockMode) {
@@ -277,6 +388,12 @@ export default function LedgerPathApp() {
       return;
     }
 
+    const attemptedAt = Date.now();
+    setAttempts((items) => [
+      ...items,
+      { questionId: question.id, correct: scored.correct, at: attemptedAt },
+    ]);
+    setCalculationNow(attemptedAt);
     setResult(scored);
     if (scored.correct) {
       setCompleted((items) =>
@@ -329,6 +446,7 @@ export default function LedgerPathApp() {
     if (!window.confirm("この端末に保存した学習進捗をリセットしますか？")) return;
     try {
       localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
     } catch {
       // State is still reset in memory when browser storage is unavailable.
     }
@@ -336,6 +454,8 @@ export default function LedgerPathApp() {
     setDailyMinutes(15);
     setCompleted([]);
     setReview([]);
+    setAttempts([]);
+    setCalculationNow(Date.now());
     setActiveCategory("all");
     setMockMode(false);
     setMockFinished(false);
@@ -412,6 +532,7 @@ export default function LedgerPathApp() {
           <a href="#today">今日</a>
           <a href="#curriculum">カリキュラム</a>
           <a href="#review">復習</a>
+          <a href="#stats">成績</a>
           <a href="#mock">模試</a>
         </nav>
         <div className="header-tools">
@@ -442,6 +563,16 @@ export default function LedgerPathApp() {
             <p className="hero-lead">
               合格までの道筋を、小さな演習に分けて。今日は約{dailyMinutes}分で終わる内容です。
             </p>
+            <dl className="hero-metrics" aria-label="今日の学習状況">
+              <div>
+                <dt>連続学習日数</dt>
+                <dd>{currentStreak}<span>日</span></dd>
+              </div>
+              <div>
+                <dt>今日のゴール</dt>
+                <dd>{todayGoal.current}<span> / {todayGoal.target}問</span></dd>
+              </div>
+            </dl>
             <button className="primary-button" type="button" onClick={() => selectQuestion(recommended.id)}>
               今日の学習を始める
               <span aria-hidden="true">→</span>
@@ -457,10 +588,30 @@ export default function LedgerPathApp() {
             <span className="category-badge">{categoryLabel(recommended.category)}</span>
             <h2>{recommended.label}</h2>
             <p>
-              {review.includes(recommended.id)
-                ? "前回つまずいた問題です。記憶が新しいうちに解き直しましょう。"
+              {reviewQueueSet.has(recommended.id)
+                ? "復習期限が来た問題です。優先して解き直し、記憶を定着させましょう。"
                 : "基本の型を押さえると、この後の決算整理が理解しやすくなります。"}
             </p>
+            <div className="progress-row">
+              <span>今日のゴール進捗</span>
+              <strong>{todayGoal.current} / {todayGoal.target} 問</strong>
+            </div>
+            <div
+              className="progress-track goal-progress"
+              role="progressbar"
+              aria-label="今日のゴール進捗"
+              aria-valuemin={0}
+              aria-valuemax={todayGoal.target}
+              aria-valuenow={Math.min(todayGoal.current, todayGoal.target)}
+              aria-valuetext={`${todayGoal.current}問 / ${todayGoal.target}問`}
+            >
+              <span style={{ width: `${todayGoal.ratio * 100}%` }} />
+            </div>
+            <small>
+              {todayGoal.completed
+                ? "今日のゴールを達成しました"
+                : `あと ${todayGoal.remaining} 問で達成`}
+            </small>
             <div className="progress-row">
               <span>パイロット進捗</span>
               <strong>{progress}%</strong>
@@ -614,15 +765,15 @@ export default function LedgerPathApp() {
                 )}
 
                 <div className="form-actions">
-                  {result && !result.correct && !mockMode ? (
-                    <button className="secondary-button" type="button" onClick={() => setResult(null)}>
-                      もう一度解く
-                    </button>
-                  ) : (
+                  {!result || mockMode ? (
                     <button className="primary-button" type="submit">
                       {mockMode ? "解答を記録して次へ" : "答え合わせ"}
                     </button>
-                  )}
+                  ) : !result.correct ? (
+                    <button className="secondary-button" type="button" onClick={() => setResult(null)}>
+                      もう一度解く
+                    </button>
+                  ) : null}
                   {result?.correct && !mockMode && (
                     <button className="secondary-button" type="button" onClick={moveNext}>
                       次の問題へ
@@ -703,7 +854,7 @@ export default function LedgerPathApp() {
             >
               {filteredQuestions.map((item) => {
                 const isCompleted = completedSet.has(item.id);
-                const needsReview = review.includes(item.id);
+                const needsReview = reviewQueueSet.has(item.id);
                 const isCurrent = question.id === item.id && !mockMode;
                 return (
                   <button
@@ -732,11 +883,15 @@ export default function LedgerPathApp() {
         <section className="content-section review-section" id="review" aria-labelledby="review-title">
           <div className="section-heading">
             <div><p className="eyebrow">REVIEW</p><h2 id="review-title">復習キュー</h2></div>
-            <span className="count-badge">{review.length} 問</span>
+            <span className="count-badge">{reviewQueue.length} 問</span>
           </div>
-          {review.length ? (
+          <p className="review-summary">
+            復習期限が来た問題を、優先度の高い順に表示しています。
+            {scheduledReviewCount > 0 && ` 今後の復習予定は${scheduledReviewCount}問です。`}
+          </p>
+          {reviewQueue.length ? (
             <div className="review-list">
-              {review.map((id) => {
+              {reviewQueue.map((id) => {
                 const item = questionById.get(id);
                 if (!item) return null;
                 return (
@@ -750,6 +905,76 @@ export default function LedgerPathApp() {
           ) : (
             <p className="empty-state">復習待ちの問題はありません。間違えた問題はここに自動で追加されます。</p>
           )}
+        </section>
+
+        <section className="content-section stats-section" id="stats" aria-labelledby="stats-title">
+          <div className="section-heading">
+            <div><p className="eyebrow">PERFORMANCE</p><h2 id="stats-title">成績</h2></div>
+            <p>答え合わせの履歴から、カテゴリ別の正答率と次に取り組みたい弱点を確認できます。</p>
+          </div>
+          <div className="stats-layout">
+            <div className="accuracy-grid" role="list" aria-label="カテゴリ別正答率">
+              {CATEGORIES.map((category) => {
+                const score = accuracyByCategory.get(category.key);
+                const accuracy = score?.accuracy ?? null;
+                const percentage = accuracy === null ? 0 : Math.round(accuracy * 100);
+                const status = accuracy === null ? "未着手" : accuracy < 0.7 ? "弱点" : "定着中";
+                const detailId = `accuracy-detail-${category.key}`;
+                return (
+                  <article
+                    className={`accuracy-card accuracy-${status === "未着手" ? "unstarted" : status === "弱点" ? "weak" : "steady"}`}
+                    key={category.key}
+                    role="listitem"
+                  >
+                    <div className="accuracy-card-head">
+                      <h3>{category.label}</h3>
+                      <span className="accuracy-status">{status}</span>
+                    </div>
+                    <p className="accuracy-value">
+                      {accuracy === null ? "—" : `${percentage}%`}
+                    </p>
+                    <div
+                      className="accuracy-track"
+                      role="progressbar"
+                      aria-label={`${category.label}の正答率`}
+                      aria-describedby={detailId}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={accuracy === null ? undefined : percentage}
+                      aria-valuetext={accuracy === null ? "未着手" : `${percentage}パーセント`}
+                    >
+                      <span style={{ width: `${percentage}%` }} />
+                    </div>
+                    <p id={detailId} className="accuracy-detail">
+                      {score?.total ? `正答 ${score.correct}回 / 試行 ${score.total}回` : "まだ回答履歴がありません"}
+                    </p>
+                  </article>
+                );
+              })}
+            </div>
+
+            <aside className="weakness-card" aria-labelledby="weakness-title">
+              <p className="eyebrow">NEXT FOCUS</p>
+              <h3 id="weakness-title">次に伸ばしたいカテゴリ</h3>
+              {weakCategories.length ? (
+                <>
+                  <p>未着手、または正答率70%未満のカテゴリを優先して復習しましょう。</p>
+                  <ul>
+                    {weakCategories.map((row) => (
+                      <li key={row.category}>
+                        <span>{categoryLabel(row.category)}</span>
+                        <strong>
+                          {row.accuracy === null ? "未着手" : `正答率 ${Math.round(row.accuracy * 100)}%`}
+                        </strong>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p>全カテゴリで正答率70%以上です。この調子で復習を続けましょう。</p>
+              )}
+            </aside>
+          </div>
         </section>
 
         <section className="mock-section" id="mock" aria-labelledby="mock-title">
