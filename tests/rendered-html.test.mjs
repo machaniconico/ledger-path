@@ -44,6 +44,8 @@ test("server-renders the finished Japanese Ledger Path app", async () => {
   assert.match(html, /行を追加/);
   assert.match(html, /行を削除/);
   assert.match(html, /60分ミニ模試/);
+  assert.match(normalizedHtml, /15問をカテゴリ配分で抽選/);
+  assert.match(html, /模試を始める/);
   assert.match(html, /独立した非公式の学習パイロット/);
   assert.match(html, /og\.png/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
@@ -64,6 +66,14 @@ test("removes preview assets and retains key product safeguards", async () => {
   assert.match(client, /保存済み（この端末）/);
   assert.match(client, /合格を保証するものではありません/);
   assert.match(client, /mockMode/);
+  assert.match(client, /DEFAULT_MOCK_QUESTION_COUNT/);
+  assert.match(client, /selectMockQuestions\(questions,/);
+  assert.match(client, /count: 15/);
+  assert.match(client, /summarizeMock\(mockQuestions, mockResults\)/);
+  assert.match(client, /role="timer"/);
+  assert.match(client, /aria-label="模試のカテゴリ別結果"/);
+  assert.match(client, /誤答を復習/);
+  assert.doesNotMatch(client, /mockQuestionIds|new Set\(\["q1", "q2", "q3"\]\)/);
   assert.match(client, /aria-live="polite"/);
   assert.doesNotMatch(
     client,
