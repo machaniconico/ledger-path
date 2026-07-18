@@ -3,6 +3,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -13,15 +14,15 @@ import {
   type ReasonCode,
   type ScoreResult,
 } from "../lib/scoring";
-
-type Question = {
-  id: string;
-  label: string;
-  prompt: string;
-  hint: string;
-  explanation: string;
-  expected: EntryLine[];
-};
+import {
+  ALL_ACCOUNTS,
+  CATEGORIES,
+  categoryLabel,
+  questions,
+  type CategoryKey,
+  type Difficulty,
+  type Question,
+} from "../lib/questions";
 
 type SavedState = {
   nickname: string;
@@ -31,65 +32,36 @@ type SavedState = {
 };
 
 type SaveStatus = "pending" | "saved" | "error";
+type CategoryFilter = CategoryKey | "all";
 
 const STORAGE_KEY = "ledger-path-state-v1";
-
-const questions: Question[] = [
-  {
-    id: "q1",
-    label: "現金での購入",
-    prompt: "事務用の文房具 24,000円を購入し、代金は現金で支払った。",
-    hint: "文房具は費用が増え、現金という資産が減ります。",
-    explanation:
-      "費用の増加は借方、資産の減少は貸方です。そのため借方「消耗品費」24,000円、貸方「現金」24,000円となります。",
-    expected: [
-      { side: "debit", account: "消耗品費", amount: "24000" },
-      { side: "credit", account: "現金", amount: "24000" },
-    ],
-  },
-  {
-    id: "q2",
-    label: "債務の支払い",
-    prompt:
-      "買掛金 80,000円について、30,000円を現金で、残額を普通預金から支払った。",
-    hint: "買掛金という負債が減り、2種類の資産も減ります。",
-    explanation:
-      "負債の減少は借方、資産の減少は貸方です。借方「買掛金」80,000円に対し、貸方は「現金」30,000円と「普通預金」50,000円です。",
-    expected: [
-      { side: "debit", account: "買掛金", amount: "80000" },
-      { side: "credit", account: "現金", amount: "30000" },
-      { side: "credit", account: "普通預金", amount: "50000" },
-    ],
-  },
-  {
-    id: "q3",
-    label: "給与と預り金",
-    prompt:
-      "従業員の給与 185,000円から源泉所得税 15,000円を差し引き、残額を普通預金から支払った。",
-    hint: "給与の全額を費用にし、差し引いた税金は預り金として処理します。",
-    explanation:
-      "借方「給料」185,000円、貸方は会社が一時的に預かる「所得税預り金」15,000円と、実際の支払額「普通預金」170,000円です。",
-    expected: [
-      { side: "debit", account: "給料", amount: "185000" },
-      { side: "credit", account: "所得税預り金", amount: "15000" },
-      { side: "credit", account: "普通預金", amount: "170000" },
-    ],
-  },
-];
-
-const accounts = [
-  "現金",
-  "普通預金",
-  "売掛金",
-  "消耗品費",
-  "買掛金",
-  "給料",
-  "所得税預り金",
-  "売上",
-];
+const INITIAL_ENTRY_LINES = 4;
+const MIN_ENTRY_LINES = 2;
+const MAX_ENTRY_LINES = 8;
 
 const allowedDailyMinutes = new Set([5, 10, 15, 30]);
 const validQuestionIds = new Set(questions.map((question) => question.id));
+const questionById = new Map(questions.map((question) => [question.id, question]));
+const questionsByCategory = new Map(
+  CATEGORIES.map((category) => [
+    category.key,
+    questions.filter((question) => question.category === category.key),
+  ]),
+);
+const maxCategorySize = Math.max(
+  ...CATEGORIES.map((category) => questionsByCategory.get(category.key)?.length ?? 0),
+);
+const crossCategoryQuestions = Array.from({ length: maxCategorySize }).flatMap((_, index) =>
+  CATEGORIES.flatMap((category) => questionsByCategory.get(category.key)?.[index] ?? []),
+);
+const mockQuestionIds = new Set(["q1", "q2", "q3"]);
+const mockQuestions = questions.filter((question) => mockQuestionIds.has(question.id));
+
+const difficultyLabels: Record<Difficulty, string> = {
+  basic: "基礎",
+  standard: "標準",
+  advanced: "応用",
+};
 
 function parseSavedState(raw: string): SavedState | null {
   const value: unknown = JSON.parse(raw);
@@ -122,11 +94,14 @@ const reasonMessages: Record<ReasonCode, string> = {
   side: "借方と貸方が逆です。資産・費用の増加は借方から考えましょう。",
 };
 
-const blankLines = (): EntryLine[] => [
-  { side: "debit", account: "", amount: "" },
-  { side: "credit", account: "", amount: "" },
-  { side: "credit", account: "", amount: "" },
-];
+const blankLine = (index: number): EntryLine => ({
+  side: index % 2 === 0 ? "debit" : "credit",
+  account: "",
+  amount: "",
+});
+
+const blankLines = (): EntryLine[] =>
+  Array.from({ length: INITIAL_ENTRY_LINES }, (_, index) => blankLine(index));
 
 function formatAnswer(lines: EntryLine[]) {
   return lines
@@ -148,14 +123,41 @@ export default function LedgerPathApp() {
   const [lines, setLines] = useState<EntryLine[]>(blankLines);
   const [result, setResult] = useState<ScoreResult | null>(null);
   const [hintOpen, setHintOpen] = useState(false);
+  const [activeCategory, setActiveCategory] = useState<CategoryFilter>("all");
   const [mockMode, setMockMode] = useState(false);
   const [mockAnswers, setMockAnswers] = useState<boolean[]>([]);
   const [mockFinished, setMockFinished] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("pending");
+  const questionHeadingRef = useRef<HTMLHeadingElement>(null);
+  const mockResultHeadingRef = useRef<HTMLHeadingElement>(null);
 
-  const question = questions[questionIndex];
+  const question = questions[questionIndex] ?? questions[0];
+  const completedSet = useMemo(() => new Set(completed), [completed]);
+  const filteredQuestions = useMemo(
+    () =>
+      activeCategory === "all"
+        ? questions
+        : questionsByCategory.get(activeCategory) ?? [],
+    [activeCategory],
+  );
+  const categoryStats = useMemo(
+    () =>
+      CATEGORIES.map((category) => {
+        const categoryQuestions = questionsByCategory.get(category.key) ?? [];
+        const completedCount = categoryQuestions.filter((item) => completedSet.has(item.id)).length;
+        return {
+          ...category,
+          questions: categoryQuestions,
+          completedCount,
+          progress: Math.round((completedCount / categoryQuestions.length) * 100),
+        };
+      }),
+    [completedSet],
+  );
   const progress = Math.round((completed.length / questions.length) * 100);
   const greetingName = nickname.trim() || "学習者";
+  const mockQuestionIndex = mockQuestions.findIndex((item) => item.id === question.id);
+  const filteredQuestionIndex = filteredQuestions.findIndex((item) => item.id === question.id);
 
   useEffect(() => {
     const restoreTask = window.setTimeout(() => {
@@ -210,17 +212,29 @@ export default function LedgerPathApp() {
   }, [hydrated, onboarding]);
 
   const recommended = useMemo(() => {
-    const reviewQuestion = questions.find((item) => review.includes(item.id));
-    return reviewQuestion ?? questions.find((item) => !completed.includes(item.id)) ?? questions[0];
-  }, [completed, review]);
+    const reviewQuestion = review
+      .map((id) => questionById.get(id))
+      .find((item): item is Question => Boolean(item));
+    const incompleteQuestion = crossCategoryQuestions.find(
+      (item) => !completedSet.has(item.id),
+    );
+    return reviewQuestion ?? incompleteQuestion ?? crossCategoryQuestions[0] ?? questions[0];
+  }, [completedSet, review]);
 
   function selectQuestion(id: string) {
-    const index = questions.findIndex((item) => item.id === id);
-    if (index >= 0) setQuestionIndex(index);
+    const selectedQuestion = questionById.get(id);
+    if (!selectedQuestion) return;
+
+    setQuestionIndex(questions.indexOf(selectedQuestion));
     setLines(blankLines());
     setResult(null);
     setHintOpen(false);
-    requestAnimationFrame(scrollToPractice);
+    if (mockMode) {
+      setMockMode(false);
+      setMockFinished(false);
+      setMockAnswers([]);
+    }
+    focusPracticeQuestion();
   }
 
   function scrollToPractice() {
@@ -230,6 +244,20 @@ export default function LedgerPathApp() {
       ?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth" });
   }
 
+  function focusPracticeQuestion() {
+    requestAnimationFrame(() => {
+      questionHeadingRef.current?.focus({ preventScroll: true });
+      scrollToPractice();
+    });
+  }
+
+  function focusMockResult() {
+    requestAnimationFrame(() => {
+      mockResultHeadingRef.current?.focus({ preventScroll: true });
+      scrollToPractice();
+    });
+  }
+
   function submitAnswer(event: FormEvent) {
     event.preventDefault();
     const scored = scoreJournalEntry(lines, question.expected);
@@ -237,11 +265,14 @@ export default function LedgerPathApp() {
     if (mockMode) {
       const nextAnswers = [...mockAnswers, scored.correct];
       setMockAnswers(nextAnswers);
-      if (questionIndex === questions.length - 1) {
+      if (mockQuestionIndex === mockQuestions.length - 1) {
         setMockFinished(true);
+        focusMockResult();
       } else {
-        setQuestionIndex((value) => value + 1);
+        const nextQuestion = mockQuestions[mockQuestionIndex + 1] ?? mockQuestions[0];
+        setQuestionIndex(questions.indexOf(nextQuestion));
         setLines(blankLines());
+        focusPracticeQuestion();
       }
       return;
     }
@@ -260,20 +291,27 @@ export default function LedgerPathApp() {
   }
 
   function moveNext() {
-    setQuestionIndex((value) => (value + 1) % questions.length);
+    const sequence = filteredQuestionIndex >= 0 ? filteredQuestions : questions;
+    const currentIndex = sequence.findIndex((item) => item.id === question.id);
+    const nextQuestion = sequence[(currentIndex + 1) % sequence.length] ?? questions[0];
+    setQuestionIndex(questions.indexOf(nextQuestion));
     setLines(blankLines());
     setResult(null);
     setHintOpen(false);
+    focusPracticeQuestion();
   }
 
   function startMock() {
+    const firstMockQuestion = mockQuestions[0];
     setMockMode(true);
     setMockFinished(false);
     setMockAnswers([]);
-    setQuestionIndex(0);
+    setActiveCategory("all");
+    setQuestionIndex(questions.indexOf(firstMockQuestion));
     setLines(blankLines());
     setResult(null);
-    scrollToPractice();
+    setHintOpen(false);
+    focusPracticeQuestion();
   }
 
   function exitMock() {
@@ -282,6 +320,9 @@ export default function LedgerPathApp() {
     setMockAnswers([]);
     setQuestionIndex(0);
     setLines(blankLines());
+    setResult(null);
+    setHintOpen(false);
+    focusPracticeQuestion();
   }
 
   function resetData() {
@@ -295,6 +336,14 @@ export default function LedgerPathApp() {
     setDailyMinutes(15);
     setCompleted([]);
     setReview([]);
+    setActiveCategory("all");
+    setMockMode(false);
+    setMockFinished(false);
+    setMockAnswers([]);
+    setQuestionIndex(0);
+    setLines(blankLines());
+    setResult(null);
+    setHintOpen(false);
     setSaveStatus("pending");
     setOnboarding(true);
   }
@@ -302,6 +351,28 @@ export default function LedgerPathApp() {
   function finishOnboarding(event: FormEvent) {
     event.preventDefault();
     setOnboarding(false);
+  }
+
+  function updateLine(index: number, patch: Partial<EntryLine>) {
+    setLines((items) =>
+      items.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, ...patch } : item,
+      ),
+    );
+  }
+
+  function addLine() {
+    setLines((items) =>
+      items.length >= MAX_ENTRY_LINES
+        ? items
+        : [...items, blankLine(items.length)],
+    );
+  }
+
+  function removeLine() {
+    setLines((items) =>
+      items.length <= MIN_ENTRY_LINES ? items : items.slice(0, -1),
+    );
   }
 
   function trapDialogFocus(event: ReactKeyboardEvent<HTMLDivElement>) {
@@ -383,6 +454,7 @@ export default function LedgerPathApp() {
               <span>約 {Math.min(dailyMinutes, 10)} 分</span>
             </div>
             <p className="task-number">仕訳演習 {recommended.id.slice(1).padStart(2, "0")}</p>
+            <span className="category-badge">{categoryLabel(recommended.category)}</span>
             <h2>{recommended.label}</h2>
             <p>
               {review.includes(recommended.id)
@@ -414,22 +486,29 @@ export default function LedgerPathApp() {
               <h2 id="practice-title">仕訳トレーニング</h2>
             </div>
             <span className="step-chip">
-              {mockMode ? "模試モード" : "練習モード"}　{questionIndex + 1} / {questions.length}
+              {mockMode
+                ? `模試モード　${Math.max(mockQuestionIndex, 0) + 1} / ${mockQuestions.length}`
+                : `練習モード　${filteredQuestionIndex >= 0 ? filteredQuestionIndex + 1 : questionIndex + 1} / ${filteredQuestionIndex >= 0 ? filteredQuestions.length : questions.length}`}
             </span>
           </div>
 
           {mockFinished ? (
             <div className="mock-result" role="status">
               <p className="eyebrow">模試結果</p>
-              <h3>{mockAnswers.filter(Boolean).length} / {questions.length} 問正解</h3>
+              <h3 ref={mockResultHeadingRef} tabIndex={-1}>
+                {mockAnswers.filter(Boolean).length} / {mockQuestions.length} 問正解
+              </h3>
               <p>この結果はLedger Path独自の練習指標です。合格を保証するものではありません。</p>
               <button className="primary-button" type="button" onClick={exitMock}>模試を終了する</button>
             </div>
           ) : (
             <div className="practice-layout">
               <article className="question-card">
-                <p className="question-label">問題 {questionIndex + 1}</p>
-                <h3>{question.label}</h3>
+                <div className="question-meta">
+                  <p className="question-label">問題 {question.id.slice(1).padStart(2, "0")}</p>
+                  <span className="category-badge">{categoryLabel(question.category)}</span>
+                </div>
+                <h3 ref={questionHeadingRef} tabIndex={-1}>{question.label}</h3>
                 <p className="question-prompt">{question.prompt}</p>
                 {!mockMode && (
                   <div className="hint-block">
@@ -447,54 +526,83 @@ export default function LedgerPathApp() {
                 )}
               </article>
 
-              <form className="entry-card" onSubmit={submitAnswer}>
+              <form
+                className="entry-card"
+                aria-describedby="entry-instruction"
+                onSubmit={submitAnswer}
+              >
+                <p className="entry-instruction" id="entry-instruction">
+                  各行の借方・貸方を選び、勘定科目と金額を入力してください。行数は2〜8行で調整できます。
+                </p>
                 <div className="entry-head" aria-hidden="true">
                   <span>区分</span><span>勘定科目</span><span>金額</span>
                 </div>
                 {lines.map((line, index) => (
-                  <div className="entry-row" key={`${line.side}-${index}`}>
-                    <span className={`side-label ${line.side}`}>
-                      {line.side === "debit" ? "借方" : "貸方"}
-                    </span>
+                  <div className="entry-row" key={index}>
+                    <label className="side-field">
+                      <span className="sr-only">仕訳行{index + 1}の区分</span>
+                      <select
+                        className={`side-select ${line.side}`}
+                        value={line.side}
+                        onChange={(event) =>
+                          updateLine(index, {
+                            side: event.target.value === "credit" ? "credit" : "debit",
+                          })
+                        }
+                      >
+                        <option value="debit">借方</option>
+                        <option value="credit">貸方</option>
+                      </select>
+                    </label>
                     <label>
-                      <span className="sr-only">
-                        {line.side === "debit" ? "借方" : `貸方${index}`}の勘定科目
-                      </span>
+                      <span className="sr-only">仕訳行{index + 1}の勘定科目</span>
                       <select
                         value={line.account}
                         onChange={(event) =>
-                          setLines((items) =>
-                            items.map((item, itemIndex) =>
-                              itemIndex === index ? { ...item, account: event.target.value } : item,
-                            ),
-                          )
+                          updateLine(index, { account: event.target.value })
                         }
                       >
                         <option value="">選択してください</option>
-                        {accounts.map((account) => <option key={account}>{account}</option>)}
+                        {ALL_ACCOUNTS.map((account) => <option key={account}>{account}</option>)}
                       </select>
                     </label>
                     <label className="amount-field">
-                      <span className="sr-only">
-                        {line.side === "debit" ? "借方" : `貸方${index}`}の金額
-                      </span>
+                      <span className="sr-only">仕訳行{index + 1}の金額</span>
                       <span aria-hidden="true">¥</span>
                       <input
                         inputMode="numeric"
                         autoComplete="off"
-                        placeholder={index === 2 ? "必要な場合のみ" : "0"}
+                        placeholder="0"
                         value={line.amount}
                         onChange={(event) =>
-                          setLines((items) =>
-                            items.map((item, itemIndex) =>
-                              itemIndex === index ? { ...item, amount: event.target.value } : item,
-                            ),
-                          )
+                          updateLine(index, { amount: event.target.value })
                         }
                       />
                     </label>
                   </div>
                 ))}
+
+                <div className="line-controls" aria-label="仕訳行の増減">
+                  <button
+                    className="line-button"
+                    type="button"
+                    onClick={removeLine}
+                    disabled={lines.length <= MIN_ENTRY_LINES}
+                  >
+                    行を削除
+                  </button>
+                  <span className="line-count" role="status" aria-live="polite">
+                    現在 {lines.length} 行
+                  </span>
+                  <button
+                    className="line-button"
+                    type="button"
+                    onClick={addLine}
+                    disabled={lines.length >= MAX_ENTRY_LINES}
+                  >
+                    行を追加
+                  </button>
+                </div>
 
                 {result && !mockMode && (
                   <div className={`feedback ${result.correct ? "is-correct" : "is-wrong"}`} role="status" aria-live="polite">
@@ -528,24 +636,96 @@ export default function LedgerPathApp() {
 
         <section className="content-section" id="curriculum" aria-labelledby="curriculum-title">
           <div className="section-heading">
-            <div><p className="eyebrow">CURRICULUM</p><h2 id="curriculum-title">合格へつながる4段階</h2></div>
-            <p>基礎から本番形式まで、順番に迷わない設計です。</p>
+            <div><p className="eyebrow">CURRICULUM</p><h2 id="curriculum-title">カテゴリから選ぶ</h2></div>
+            <p>{CATEGORIES.length}カテゴリ・全{questions.length}問から、強化したい論点を選んで練習できます。</p>
           </div>
-          <div className="stage-grid">
-            {[
-              ["01", "仕訳の土台", "取引の8要素と借方・貸方", "進行中"],
-              ["02", "帳簿と伝票", "主要簿・補助簿のつながり", "次の段階"],
-              ["03", "決算整理", "試算表から財務諸表まで", "未着手"],
-              ["04", "本試験演習", "時間配分と総合問題", "未着手"],
-            ].map(([number, title, text, status]) => (
-              <article className="stage-card" key={number}>
-                <span className="stage-number">{number}</span>
-                <p className="stage-status">{status}</p>
-                <h3>{title}</h3>
-                <p>{text}</p>
-                <div className="stage-rule" />
-              </article>
-            ))}
+          <div className="category-grid" role="group" aria-label="問題カテゴリ">
+            <button
+              className={`category-card ${activeCategory === "all" ? "is-active" : ""}`}
+              type="button"
+              aria-pressed={activeCategory === "all"}
+              aria-controls="question-bank-list"
+              onClick={() => setActiveCategory("all")}
+            >
+              <span className="category-card-head">
+                <strong>すべてのカテゴリ</strong>
+                <small>{activeCategory === "all" ? "選択中 · " : ""}{completed.length} / {questions.length} 問</small>
+              </span>
+              <span className="category-summary">全範囲をカテゴリ横断で練習</span>
+              <span className="category-progress" aria-hidden="true">
+                <span style={{ width: `${progress}%` }} />
+              </span>
+            </button>
+            {categoryStats.map((category) => {
+              const active = activeCategory === category.key;
+              return (
+                <button
+                  className={`category-card ${active ? "is-active" : ""}`}
+                  type="button"
+                  key={category.key}
+                  aria-pressed={active}
+                  aria-controls="question-bank-list"
+                  onClick={() => setActiveCategory(category.key)}
+                >
+                  <span className="category-card-head">
+                    <strong>{category.label}</strong>
+                    <small>{active ? "選択中 · " : ""}{category.completedCount} / {category.questions.length} 問</small>
+                  </span>
+                  <span className="category-summary">{category.summary}</span>
+                  <span className="category-progress" aria-hidden="true">
+                    <span style={{ width: `${category.progress}%` }} />
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="question-bank">
+            <div className="question-bank-heading">
+              <div>
+                <p className="eyebrow">QUESTION BANK</p>
+                <h3 id="question-bank-title">
+                  {activeCategory === "all" ? "全カテゴリ" : categoryLabel(activeCategory)}の問題一覧
+                </h3>
+              </div>
+              <span className="count-badge">{filteredQuestions.length} 問</span>
+            </div>
+            <p className="bank-summary" role="status" aria-live="polite">
+              {activeCategory === "all"
+                ? `全${questions.length}問を表示中です。`
+                : `${categoryLabel(activeCategory)}の${filteredQuestions.length}問を表示中です。`}
+              問題を選ぶと練習欄へ移動します。
+            </p>
+            <div
+              className="question-picker"
+              id="question-bank-list"
+              aria-labelledby="question-bank-title"
+            >
+              {filteredQuestions.map((item) => {
+                const isCompleted = completedSet.has(item.id);
+                const needsReview = review.includes(item.id);
+                const isCurrent = question.id === item.id && !mockMode;
+                return (
+                  <button
+                    className={`question-picker-card ${isCurrent ? "is-current" : ""}`}
+                    type="button"
+                    key={item.id}
+                    aria-current={isCurrent ? "true" : undefined}
+                    onClick={() => selectQuestion(item.id)}
+                  >
+                    <span className="question-picker-meta">
+                      <span className="category-badge">{categoryLabel(item.category)}</span>
+                      <span>{difficultyLabels[item.difficulty]}</span>
+                    </span>
+                    <strong>{item.label}</strong>
+                    <small>
+                      {needsReview ? "要復習" : isCompleted ? "完了済み" : "未完了"}
+                      <span aria-hidden="true">　→</span>
+                    </small>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </section>
 
@@ -557,10 +737,11 @@ export default function LedgerPathApp() {
           {review.length ? (
             <div className="review-list">
               {review.map((id) => {
-                const item = questions.find((candidate) => candidate.id === id)!;
+                const item = questionById.get(id);
+                if (!item) return null;
                 return (
                   <button type="button" key={id} onClick={() => selectQuestion(id)}>
-                    <span><small>要復習</small><strong>{item.label}</strong></span>
+                    <span><small>要復習 · {categoryLabel(item.category)}</small><strong>{item.label}</strong></span>
                     <span>解き直す →</span>
                   </button>
                 );
@@ -575,9 +756,9 @@ export default function LedgerPathApp() {
           <div>
             <p className="eyebrow light">MOCK EXAM</p>
             <h2 id="mock-title">60分ミニ模試</h2>
-            <p>3問のオリジナル問題で、ヒントや即時解説に頼らず実力を確認します。</p>
+            <p>{mockQuestions.length}問のオリジナル問題で、ヒントや即時解説に頼らず実力を確認します。</p>
           </div>
-          <div className="mock-meta"><span><b>03</b> 問</span><span><b>60</b> 分想定</span></div>
+          <div className="mock-meta"><span><b>{String(mockQuestions.length).padStart(2, "0")}</b> 問</span><span><b>60</b> 分想定</span></div>
           {mockMode ? (
             <button className="ivory-button" type="button" onClick={exitMock}>模試モードを終了</button>
           ) : (
