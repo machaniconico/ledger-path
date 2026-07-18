@@ -30,6 +30,12 @@ import {
   type Attempt,
 } from "../lib/progress";
 import { categoryAccuracy } from "../lib/stats";
+import {
+  DEFAULT_MOCK_QUESTION_COUNT,
+  selectMockQuestions,
+  summarizeMock,
+  type MockResult,
+} from "../lib/mock";
 
 type SavedState = {
   version: 2;
@@ -42,6 +48,10 @@ type SavedState = {
 
 type SaveStatus = "pending" | "saved" | "error";
 type CategoryFilter = CategoryKey | "all";
+type MockResponse = Readonly<{
+  id: string;
+  lines: EntryLine[];
+}>;
 
 const STORAGE_KEY = "ledger-path-state-v2";
 const LEGACY_STORAGE_KEY = "ledger-path-state-v1";
@@ -64,8 +74,6 @@ const maxCategorySize = Math.max(
 const crossCategoryQuestions = Array.from({ length: maxCategorySize }).flatMap((_, index) =>
   CATEGORIES.flatMap((category) => questionsByCategory.get(category.key)?.[index] ?? []),
 );
-const mockQuestionIds = new Set(["q1", "q2", "q3"]);
-const mockQuestions = questions.filter((question) => mockQuestionIds.has(question.id));
 
 const difficultyLabels: Record<Difficulty, string> = {
   basic: "基礎",
@@ -148,6 +156,23 @@ function formatAnswer(lines: EntryLine[]) {
     .join(" ／ ");
 }
 
+function formatElapsedTime(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
+}
+
+function currentTimestamp() {
+  return Date.now();
+}
+
+function createMockSeed() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${currentTimestamp()}-${Math.random()}`;
+}
+
 export default function LedgerPathApp() {
   const [hydrated, setHydrated] = useState(false);
   const [onboarding, setOnboarding] = useState(false);
@@ -163,8 +188,12 @@ export default function LedgerPathApp() {
   const [hintOpen, setHintOpen] = useState(false);
   const [activeCategory, setActiveCategory] = useState<CategoryFilter>("all");
   const [mockMode, setMockMode] = useState(false);
-  const [mockAnswers, setMockAnswers] = useState<boolean[]>([]);
+  const [mockQuestions, setMockQuestions] = useState<Question[]>([]);
+  const [mockResponses, setMockResponses] = useState<MockResponse[]>([]);
+  const [mockResults, setMockResults] = useState<MockResult[]>([]);
   const [mockFinished, setMockFinished] = useState(false);
+  const [mockStartedAt, setMockStartedAt] = useState<number | null>(null);
+  const [mockElapsedSeconds, setMockElapsedSeconds] = useState(0);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("pending");
   const questionHeadingRef = useRef<HTMLHeadingElement>(null);
   const mockResultHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -231,8 +260,23 @@ export default function LedgerPathApp() {
       .sort((left, right) => (left.accuracy ?? -1) - (right.accuracy ?? -1)),
     [accuracyRows],
   );
+  const mockSummary = useMemo(
+    () => summarizeMock(mockQuestions, mockResults),
+    [mockQuestions, mockResults],
+  );
+  const mockResultById = useMemo(
+    () => new Map(mockResults.map((item) => [item.id, item.correct])),
+    [mockResults],
+  );
+  const mockWrongQuestions = useMemo(
+    () => mockQuestions.filter((item) => mockResultById.get(item.id) === false),
+    [mockQuestions, mockResultById],
+  );
   const greetingName = nickname.trim() || "学習者";
   const mockQuestionIndex = mockQuestions.findIndex((item) => item.id === question.id);
+  const mockDisplayCount = mockMode
+    ? mockQuestions.length
+    : Math.min(DEFAULT_MOCK_QUESTION_COUNT, validQuestionIds.size);
   const filteredQuestionIndex = filteredQuestions.findIndex((item) => item.id === question.id);
 
   useEffect(() => {
@@ -321,6 +365,18 @@ export default function LedgerPathApp() {
     };
   }, [hydrated]);
 
+  useEffect(() => {
+    if (!mockMode || mockFinished || mockStartedAt === null) return;
+
+    const refreshElapsedTime = () => {
+      setMockElapsedSeconds(Math.max(0, Math.floor((Date.now() - mockStartedAt) / 1000)));
+    };
+    refreshElapsedTime();
+    const timer = window.setInterval(refreshElapsedTime, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [mockFinished, mockMode, mockStartedAt]);
+
   const recommended = useMemo(() => {
     const reviewQuestion = reviewQueue
       .map((id) => questionById.get(id))
@@ -331,6 +387,16 @@ export default function LedgerPathApp() {
     return reviewQuestion ?? incompleteQuestion ?? crossCategoryQuestions[0] ?? questions[0];
   }, [completedSet, reviewQueue]);
 
+  function clearMockSession() {
+    setMockMode(false);
+    setMockQuestions([]);
+    setMockResponses([]);
+    setMockResults([]);
+    setMockFinished(false);
+    setMockStartedAt(null);
+    setMockElapsedSeconds(0);
+  }
+
   function selectQuestion(id: string) {
     const selectedQuestion = questionById.get(id);
     if (!selectedQuestion) return;
@@ -340,9 +406,7 @@ export default function LedgerPathApp() {
     setResult(null);
     setHintOpen(false);
     if (mockMode) {
-      setMockMode(false);
-      setMockFinished(false);
-      setMockAnswers([]);
+      clearMockSession();
     }
     focusPracticeQuestion();
   }
@@ -371,13 +435,36 @@ export default function LedgerPathApp() {
   function submitAnswer(event: FormEvent) {
     event.preventDefault();
     if (!mockMode && result) return;
-    const scored = scoreJournalEntry(lines, question.expected);
 
     if (mockMode) {
-      const nextAnswers = [...mockAnswers, scored.correct];
-      setMockAnswers(nextAnswers);
+      const nextResponses = [
+        ...mockResponses,
+        { id: question.id, lines: lines.map((line) => ({ ...line })) },
+      ];
+      setMockResponses(nextResponses);
+
       if (mockQuestionIndex === mockQuestions.length - 1) {
+        const responseById = new Map(nextResponses.map((item) => [item.id, item.lines]));
+        const nextResults = mockQuestions.map((mockQuestion) => ({
+          id: mockQuestion.id,
+          correct: scoreJournalEntry(
+            responseById.get(mockQuestion.id) ?? [],
+            mockQuestion.expected,
+          ).correct,
+        }));
+        const wrongIds = nextResults
+          .filter((item) => !item.correct)
+          .map((item) => item.id);
+        const finishedAt = currentTimestamp();
+
+        setMockResults(nextResults);
         setMockFinished(true);
+        setMockElapsedSeconds(
+          mockStartedAt === null
+            ? 0
+            : Math.max(0, Math.floor((finishedAt - mockStartedAt) / 1000)),
+        );
+        setReview((items) => [...new Set([...items, ...wrongIds])]);
         focusMockResult();
       } else {
         const nextQuestion = mockQuestions[mockQuestionIndex + 1] ?? mockQuestions[0];
@@ -388,7 +475,8 @@ export default function LedgerPathApp() {
       return;
     }
 
-    const attemptedAt = Date.now();
+    const scored = scoreJournalEntry(lines, question.expected);
+    const attemptedAt = currentTimestamp();
     setAttempts((items) => [
       ...items,
       { questionId: question.id, correct: scored.correct, at: attemptedAt },
@@ -419,10 +507,19 @@ export default function LedgerPathApp() {
   }
 
   function startMock() {
-    const firstMockQuestion = mockQuestions[0];
+    const selectedQuestions = selectMockQuestions(questions, {
+      count: 15,
+      seed: createMockSeed(),
+    });
+    const firstMockQuestion = selectedQuestions[0] ?? questions[0];
+
     setMockMode(true);
+    setMockQuestions(selectedQuestions);
+    setMockResponses([]);
+    setMockResults([]);
     setMockFinished(false);
-    setMockAnswers([]);
+    setMockStartedAt(currentTimestamp());
+    setMockElapsedSeconds(0);
     setActiveCategory("all");
     setQuestionIndex(questions.indexOf(firstMockQuestion));
     setLines(blankLines());
@@ -432,14 +529,17 @@ export default function LedgerPathApp() {
   }
 
   function exitMock() {
-    setMockMode(false);
-    setMockFinished(false);
-    setMockAnswers([]);
+    clearMockSession();
     setQuestionIndex(0);
     setLines(blankLines());
     setResult(null);
     setHintOpen(false);
     focusPracticeQuestion();
+  }
+
+  function reviewMockQuestion(id: string) {
+    setReview((items) => items.includes(id) ? items : [...items, id]);
+    selectQuestion(id);
   }
 
   function resetData() {
@@ -457,9 +557,7 @@ export default function LedgerPathApp() {
     setAttempts([]);
     setCalculationNow(Date.now());
     setActiveCategory("all");
-    setMockMode(false);
-    setMockFinished(false);
-    setMockAnswers([]);
+    clearMockSession();
     setQuestionIndex(0);
     setLines(blankLines());
     setResult(null);
@@ -636,22 +734,93 @@ export default function LedgerPathApp() {
               <p className="eyebrow">PRACTICE</p>
               <h2 id="practice-title">仕訳トレーニング</h2>
             </div>
-            <span className="step-chip">
+            <span className={`step-chip ${mockMode ? "mock-step-chip" : ""}`}>
               {mockMode
-                ? `模試モード　${Math.max(mockQuestionIndex, 0) + 1} / ${mockQuestions.length}`
+                ? (
+                    <>
+                      <span>模試モード　{Math.max(mockQuestionIndex, 0) + 1} / {mockQuestions.length}</span>
+                      <span
+                        className="mock-timer"
+                        role="timer"
+                        aria-label={`経過時間 ${formatElapsedTime(mockElapsedSeconds)}`}
+                      >
+                        経過 <time dateTime={`PT${mockElapsedSeconds}S`}>{formatElapsedTime(mockElapsedSeconds)}</time>
+                      </span>
+                    </>
+                  )
                 : `練習モード　${filteredQuestionIndex >= 0 ? filteredQuestionIndex + 1 : questionIndex + 1} / ${filteredQuestionIndex >= 0 ? filteredQuestions.length : questions.length}`}
             </span>
           </div>
 
           {mockFinished ? (
-            <div className="mock-result" role="status">
+            <section className="mock-result" aria-labelledby="mock-result-title">
               <p className="eyebrow">模試結果</p>
-              <h3 ref={mockResultHeadingRef} tabIndex={-1}>
-                {mockAnswers.filter(Boolean).length} / {mockQuestions.length} 問正解
+              <h3 id="mock-result-title" ref={mockResultHeadingRef} tabIndex={-1}>
+                {mockSummary.overall.correct} / {mockSummary.overall.total} 問正解
               </h3>
+              <dl className="mock-result-meta" aria-label="模試の全体結果">
+                <div>
+                  <dt>全体スコア</dt>
+                  <dd>
+                    {mockSummary.overall.total === 0
+                      ? 0
+                      : Math.round((mockSummary.overall.correct / mockSummary.overall.total) * 100)}%
+                  </dd>
+                </div>
+                <div>
+                  <dt>所要時間</dt>
+                  <dd><time dateTime={`PT${mockElapsedSeconds}S`}>{formatElapsedTime(mockElapsedSeconds)}</time></dd>
+                </div>
+              </dl>
+
+              <section className="mock-breakdown" aria-label="模試のカテゴリ別結果">
+                <h4>カテゴリ別内訳</h4>
+                <ul>
+                  {CATEGORIES.map((category) => {
+                    const score = mockSummary.byCategory[category.key];
+                    if (!score) return null;
+                    return (
+                      <li key={category.key}>
+                        <span>{category.label}</span>
+                        <strong>{score.correct} / {score.total} 問</strong>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+
+              <section className="mock-review" aria-label="模試の誤答レビュー">
+                <h4>誤答を復習</h4>
+                {mockWrongQuestions.length > 0 ? (
+                  <>
+                    <p>誤答{mockWrongQuestions.length}問を復習キューに追加しました。問題を選ぶと練習モードで解き直せます。</p>
+                    <div className="mock-review-list">
+                      {mockWrongQuestions.map((item) => (
+                        <button
+                          type="button"
+                          key={item.id}
+                          onClick={() => reviewMockQuestion(item.id)}
+                        >
+                          <span>
+                            <small>{categoryLabel(item.category)}</small>
+                            <strong>{item.label}</strong>
+                          </span>
+                          <span>この問題を復習 <span aria-hidden="true">→</span></span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <p>全問正解です。別の問題セットでも実力を確認しましょう。</p>
+                )}
+              </section>
+
               <p>この結果はLedger Path独自の練習指標です。合格を保証するものではありません。</p>
-              <button className="primary-button" type="button" onClick={exitMock}>模試を終了する</button>
-            </div>
+              <div className="mock-result-actions">
+                <button className="primary-button" type="button" onClick={exitMock}>練習モードに戻る</button>
+                <button className="secondary-button" type="button" onClick={startMock}>別の{mockDisplayCount}問に挑戦</button>
+              </div>
+            </section>
           ) : (
             <div className="practice-layout">
               <article className="question-card">
@@ -767,7 +936,11 @@ export default function LedgerPathApp() {
                 <div className="form-actions">
                   {!result || mockMode ? (
                     <button className="primary-button" type="submit">
-                      {mockMode ? "解答を記録して次へ" : "答え合わせ"}
+                      {mockMode
+                        ? mockQuestionIndex === mockQuestions.length - 1
+                          ? "解答を記録して採点"
+                          : "解答を記録して次へ"
+                        : "答え合わせ"}
                     </button>
                   ) : !result.correct ? (
                     <button className="secondary-button" type="button" onClick={() => setResult(null)}>
@@ -981,9 +1154,9 @@ export default function LedgerPathApp() {
           <div>
             <p className="eyebrow light">MOCK EXAM</p>
             <h2 id="mock-title">60分ミニ模試</h2>
-            <p>{mockQuestions.length}問のオリジナル問題で、ヒントや即時解説に頼らず実力を確認します。</p>
+            <p>{mockDisplayCount}問をカテゴリ配分で抽選し、ヒントや即時解説に頼らず実力を確認します。</p>
           </div>
-          <div className="mock-meta"><span><b>{String(mockQuestions.length).padStart(2, "0")}</b> 問</span><span><b>60</b> 分想定</span></div>
+          <div className="mock-meta"><span><b>{String(mockDisplayCount).padStart(2, "0")}</b> 問</span><span><b>60</b> 分想定</span></div>
           {mockMode ? (
             <button className="ivory-button" type="button" onClick={exitMock}>模試モードを終了</button>
           ) : (

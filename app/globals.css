@@ -213,6 +213,9 @@ main { overflow: hidden; }
 .section-heading h2 { margin: 0; color: var(--navy); font: 600 clamp(30px, 4vw, 44px)/1.25 Georgia, "Yu Mincho", serif; }
 .section-heading > p { max-width: 470px; margin: 0; color: var(--muted); }
 .step-chip, .count-badge { padding: 7px 12px; border: 1px solid var(--line); background: var(--paper); color: var(--navy); font-size: 13px; font-weight: 700; }
+.mock-step-chip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mock-timer { padding-left: 10px; border-left: 1px solid var(--line); white-space: nowrap; }
+.mock-timer time { font-variant-numeric: tabular-nums; }
 .practice-layout { display: grid; grid-template-columns: 0.72fr 1.28fr; border: 1px solid var(--line); background: var(--paper); box-shadow: var(--shadow); }
 .question-card { padding: 38px; border-right: 1px solid var(--line); background: rgba(16, 42, 67, 0.035); }
 .question-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -254,6 +257,27 @@ main { overflow: hidden; }
 .form-actions { margin-top: 26px; display: flex; gap: 12px; flex-wrap: wrap; }
 .mock-result { padding: 54px; border: 1px solid var(--line); background: var(--paper); box-shadow: var(--shadow); text-align: center; }
 .mock-result h3 { margin: 0; color: var(--navy); font: 600 40px/1.3 Georgia, serif; }
+.mock-result-meta { width: min(520px, 100%); margin: 30px auto 0; display: grid; grid-template-columns: repeat(2, 1fr); border: 1px solid var(--line); }
+.mock-result-meta > div { padding: 18px; color: var(--muted); font-size: 12px; }
+.mock-result-meta > div + div { border-left: 1px solid var(--line); }
+.mock-result-meta dt { margin-bottom: 3px; }
+.mock-result-meta dd { margin: 0; color: var(--navy); font: 600 28px/1.25 Georgia, serif; font-variant-numeric: tabular-nums; }
+.mock-breakdown, .mock-review { margin-top: 34px; padding-top: 28px; border-top: 1px solid var(--line); text-align: left; }
+.mock-breakdown h4, .mock-review h4 { margin: 0 0 14px; color: var(--navy); font: 600 22px/1.4 Georgia, "Yu Mincho", serif; }
+.mock-breakdown ul { margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px; list-style: none; }
+.mock-breakdown li { padding: 10px 0; display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e5ded1; }
+.mock-breakdown li span { color: var(--muted); }
+.mock-breakdown li strong { color: var(--navy); white-space: nowrap; }
+.mock-review > p { color: var(--muted); }
+.mock-review-list { display: grid; gap: 8px; }
+.mock-review-list button { width: 100%; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; gap: 18px; border: 1px solid var(--line); background: white; color: var(--navy); text-align: left; }
+.mock-review-list button:hover { border-color: var(--navy); background: rgba(16, 42, 67, 0.04); }
+.mock-review-list button > span:first-child { min-width: 0; }
+.mock-review-list button small, .mock-review-list button strong { display: block; }
+.mock-review-list button small { color: var(--vermilion); font-weight: 800; }
+.mock-review-list button strong { overflow-wrap: anywhere; }
+.mock-review-list button > span:last-child { flex: none; font-size: 12px; font-weight: 800; }
+.mock-result-actions { margin-top: 28px; display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; }
 
 .content-section { padding: 78px 0; border-top: 1px solid var(--line); }
 .category-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
@@ -408,6 +432,10 @@ footer > small { color: var(--muted); white-space: nowrap; }
   .section-heading { align-items: start; flex-direction: column; }
   .practice-layout { margin-inline: -16px; border-inline: 0; }
   .question-card, .entry-card { padding: 25px 16px; }
+  .mock-result { padding: 38px 20px; }
+  .mock-breakdown ul { grid-template-columns: 1fr; }
+  .mock-review-list button { align-items: start; flex-direction: column; gap: 8px; }
+  .mock-result-actions > button { width: 100%; }
   .entry-head { display: none; }
   .entry-row { grid-template-columns: 88px minmax(0, 1fr); gap: 8px; padding-bottom: 12px; border-bottom: 1px solid #e7e0d4; }
   .entry-row .amount-field { grid-column: 2; }
