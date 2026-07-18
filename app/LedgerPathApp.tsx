@@ -15,7 +15,7 @@ import {
   type ScoreResult,
 } from "../lib/scoring";
 import {
-  ALL_ACCOUNTS,
+  ACCOUNT_GROUPS,
   CATEGORIES,
   categoryLabel,
   questions,
@@ -883,7 +883,13 @@ export default function LedgerPathApp() {
                         }
                       >
                         <option value="">選択してください</option>
-                        {ALL_ACCOUNTS.map((account) => <option key={account}>{account}</option>)}
+                        {ACCOUNT_GROUPS.map((group) => (
+                          <optgroup key={group.label} label={group.label}>
+                            {group.accounts.map((account) => (
+                              <option key={account} value={account}>{account}</option>
+                            ))}
+                          </optgroup>
+                        ))}
                       </select>
                     </label>
                     <label className="amount-field">
