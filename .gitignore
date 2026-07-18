@@ -43,3 +43,6 @@ next-env.d.ts
 
 # oh-my-claudecode operational state (never commit; not part of the app)
 /.omc/
+
+# TypeScript build cache
+*.tsbuildinfo
